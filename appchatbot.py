@@ -1,86 +1,83 @@
 import streamlit as st
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
-import json
 
 # Cấu hình trang giao diện Streamlit
 st.set_page_config(page_title="Hệ thống Tiếp nhận Cảnh báo Ngộ độc Thực phẩm", layout="centered")
 st.title("🤖 Chatbot Tiếp Nhận Cảnh Báo Ngộ Độc Thực Phẩm")
-st.write("Nhập thông tin phản ánh của người dân vào ô chat bên dưới. Hệ thống sẽ tự động nhận diện và trích xuất các thông tin cần thiết.")
+st.write("Mô hình sử dụng: Google Gemini (Miễn phí)")
 
-# Khởi tạo OpenAI Client (Nhập API key của bạn hoặc lấy từ Streamlit secrets)
-# Bạn có thể thay đổi base_url nếu dùng các dịch vụ LLM khác
-api_key = st.sidebar.text_input("Nhập OpenAI API Key:", type="password")
+# Lấy API Key an toàn từ Secrets của Streamlit Cloud (hoặc điền ở Sidebar khi test dưới máy)
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    api_key = st.sidebar.text_input("Nhập Gemini API Key nếu chạy ở máy local:", type="password")
 
-# Định nghĩa cấu trúc dữ liệu cần trích xuất bằng Pydantic
+# Định nghĩa cấu trúc dữ liệu cần bóc tách
 class FoodPoisoningReport(BaseModel):
-    thoi_gian_nhan_tin: str = Field(description="Thời gian/giờ giấc người dân báo tin hoặc xảy ra vụ việc nếu có đề cập cụ thể (ví dụ: 14h, buổi tối...)")
+    thoi_gian_nhan_tin: str = Field(description="Thời gian/giờ giấc cụ thể xảy ra vụ việc nếu có đề cập (ví dụ: 14h, buổi tối...)")
     ngay_xay_ra: str = Field(description="Ngày, tháng, năm xảy ra vụ ngộ độc thực phẩm (ví dụ: 15/05/2026, hôm qua...)")
     tinh_thanh: str = Field(description="Tên tỉnh hoặc thành phố nơi xảy ra vụ việc")
-    xa_phuong_huyen: str = Field(description="Tên xã, phường, thị trấn hoặc quận, huyện xảy ra vụ việc")
-    so_nguoi_mac: int = Field(description="Số lượng người bị ngộ độc thực phẩm (mắc bệnh). Nếu không có ghi -1")
-    so_nguoi_chet: int = Field(description="Số lượng người tử vong do ngộ độc thực phẩm. Nếu không có hoặc không nhắc tới ghi 0")
-    mon_an_ngo_doc: str = Field(description="Tên các món ăn, thực phẩm nghi ngờ gây ra ngộ độc (ví dụ: bánh mì, trà sữa, nấm độc...)")
+    xa_phuong_huyen: str = Field(description="Tên xã, phường, thị trấn hoặc quận, huyện")
+    so_nguoi_mac: int = Field(description="Số lượng người bị ngộ độc thực phẩm (mắc bệnh). Nếu không nhắc tới ghi -1")
+    so_nguoi_chet: int = Field(description="Số lượng người tử vong do ngộ độc thực phẩm. Nếu không nhắc tới ghi 0")
+    mon_an_ngo_doc: str = Field(description="Tên các món ăn, thực phẩm nghi ngờ gây ra ngộ độc")
 
-# Khởi tạo lịch sử cuộc trò chuyện trong Session State của Streamlit
+# Khởi tạo lịch sử cuộc trò chuyện
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Xin chào! Tôi là chatbot tiếp nhận thông tin sự cố y tế. Hãy cung cấp thông tin hoặc đoạn văn bản phản ánh của người dân về vụ ngộ độc thực phẩm."}
+        {"role": "assistant", "content": "Xin chào! Tôi là chatbot y tế. Hãy cung cấp nội dung phản ánh của người dân về vụ ngộ độc thực phẩm."}
     ]
 
-# Hiển thị lịch sử chat ra màn hình
+# Hiển thị lịch sử chat
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Xử lý khi người dùng gửi tin nhắn (Prompt)
+# Xử lý khi người dùng nhắn tin
 if prompt := st.chat_input("Nhập nội dung phản ánh tại đây..."):
-    # Hiển thị tin nhắn người dùng
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Kiểm tra xem đã điền API Key chưa
     if not api_key:
-        st.error("⚠️ Vui lòng nhập OpenAI API Key ở thanh bên (Sidebar) để tiếp tục!")
+        st.error("⚠️ Hệ thống thiếu API Key! Vui lòng cấu hình GEMINI_API_KEY trong mục Secrets trên Streamlit Cloud.")
     else:
-        client = OpenAI(api_key=api_key)
-        
-        # Tạo hiệu ứng chờ phản hồi từ Assistant
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            message_placeholder.markdown("🔄 Đang phân tích dữ liệu và trích xuất thông tin...")
+            message_placeholder.markdown("🔄 Gemini đang phân tích dữ liệu...")
             
             try:
-                # Gọi API OpenAI sử dụng tính năng Structured Outputs (beta/parsed)
-                completion = client.beta.chat.completions.parse(
-                    model="gpt-4o-mini", # Model rẻ và xử lý trích xuất cấu trúc cực tốt
-                    messages=[
-                        {"role": "system", "content": "Bạn là trợ lý y tế chuyên trách tiếp nhận báo cáo ngộ độc thực phẩm. Nhiệm vụ của bạn là đọc phản ánh của người dân và trích xuất chính xác các trường thông tin được yêu cầu."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format=FoodPoisoningReport,
+                # Khởi tạo client Gemini
+                client = genai.Client(api_key=api_key)
+                
+                # Gọi cấu trúc dữ liệu từ Gemini model gemini-2.5-flash (rất nhanh và miễn phí)
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=f"Đọc văn bản sau và trích xuất thông tin ngộ độc thực phẩm: {prompt}",
+                    config=types.GenerateContentConfig(
+                        system_instruction="Bạn là trợ lý y tế chuyên bóc tách thông tin chính xác từ văn bản phản ánh sự cố.",
+                        response_mime_type="application/json",
+                        response_schema=FoodPoisoningReport,
+                    ),
                 )
                 
-                # Lấy kết quả đã được parse theo định dạng Pydantic
-                extracted_data = completion.choices[0].message.parsed
+                # Chuyển đổi kết quả JSON text trả về thành Object python
+                import json
+                extracted_data = json.loads(response.text)
                 
-                # Tạo nội dung phản hồi thân thiện cho người dùng
-                response_text = f"**Cám ơn bạn đã cung cấp thông tin. Hệ thống đã ghi nhận và tự động phân tích cuộc gọi/phản ánh này như sau:**\n\n"
-                response_text += f"- 🕒 **Thời gian:** {extracted_data.thoi_gian_nhan_tin}\n"
-                response_text += f"- 📅 **Ngày xảy ra:** {extracted_data.ngay_xay_ra}\n"
-                response_text += f"- 📍 **Địa điểm:** {extracted_data.xa_phuong_huyen}, {extracted_data.tinh_thanh}\n"
-                response_text += f"- 🤢 **Số người mắc:** {extracted_data.so_nguoi_mac if extracted_data.so_nguoi_mac != -1 else 'Chưa rõ'} người\n"
-                response_text += f"- 💀 **Số người tử vong:** {extracted_data.so_nguoi_chet} người\n"
-                response_text += f"- 🍲 **Món ăn nghi ngờ ngộ độc:** {extracted_data.mon_an_ngo_doc}\n"
+                # Hiển thị kết quả ra màn hình
+                response_text = f"**Hệ thống ghi nhận thông tin phản ánh:**\n\n"
+                response_text += f"- 🕒 **Thời gian:** {extracted_data.get('thoi_gian_nhan_tin')}\n"
+                response_text += f"- 📅 **Ngày xảy ra:** {extracted_data.get('ngay_xay_ra')}\n"
+                response_text += f"- 📍 **Địa điểm:** {extracted_data.get('xa_phuong_huyen')}, {extracted_data.get('tinh_thanh')}\n"
+                response_text += f"- 🤢 **Số người mắc:** {extracted_data.get('so_nguoi_mac') if extracted_data.get('so_nguoi_mac') != -1 else 'Chưa rõ'} người\n"
+                response_text += f"- 💀 **Số người tử vong:** {extracted_data.get('so_nguoi_chet')} người\n"
+                response_text += f"- 🍲 **Món ăn nghi ngờ:** {extracted_data.get('mon_an_ngo_doc')}\n"
                 
-                # Cập nhật kết quả lên màn hình chat
                 message_placeholder.markdown(response_text)
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
                 
-                # Hiển thị thêm hộp JSON thô ở dưới để kiểm tra nếu muốn lưu vào Database
-                with st.expander("📊 Xem dữ liệu cấu trúc JSON hệ thống nhận được"):
-                    st.json(extracted_data.model_dump())
-                    
             except Exception as e:
-                st.error(f"Đã xảy ra lỗi khi kết nối hoặc xử lý dữ liệu: {e}")
+                st.error(f"Đã xảy ra lỗi khi kết nối Gemini: {e}")
