@@ -2,13 +2,14 @@ import streamlit as st
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from streamlit_mic_recorder import mic_recorder  # Thư viện thu âm trực tiếp
 import json
-import os
 
-# Cấu hình trang giao diện Streamlit
-st.set_page_config(page_title="Hệ thống Tiếp nhận Cảnh báo Ngộ độc Thực phẩm", layout="centered")
-st.title("🎙️ Chatbot Nghe & Phân Tích Cảnh Báo Ngộ Độc")
-st.write("Tải lên file ghi âm cuộc gọi hoặc nhập văn bản phản ánh. Gemini sẽ tự nghe và bóc tách dữ liệu.")
+# Cấu hình giao diện tối ưu cho màn hình điện thoại
+st.set_page_config(page_title="Tổng đài Cảnh báo Ngộ độc", layout="centered")
+
+st.title("🎙️ Tổng Đài Tiếp Nhận Báo Cáo Ngộ Độc")
+st.write("Chạm vào nút ghi âm bên dưới và nói trực tiếp nội dung phản ánh.")
 
 # Lấy API Key an toàn từ Secrets hoặc Sidebar
 if "GEMINI_API_KEY" in st.secrets:
@@ -16,9 +17,9 @@ if "GEMINI_API_KEY" in st.secrets:
 else:
     api_key = st.sidebar.text_input("Nhập Gemini API Key nếu chạy ở máy local:", type="password")
 
-# Định nghĩa cấu trúc dữ liệu bóc tách bằng Pydantic
+# Định nghĩa cấu trúc dữ liệu bóc tách
 class FoodPoisoningReport(BaseModel):
-    thoi_gian_nhan_tin: str = Field(description="Thời gian/giờ giấc cụ thể xảy ra vụ việc hoặc cuộc gọi nếu có đề cập (ví dụ: 14h, buổi tối...)")
+    thoi_gian_nhan_tin: str = Field(description="Thời gian/giờ giấc cụ thể xảy ra vụ việc hoặc cuộc gọi (ví dụ: 14h, buổi tối...)")
     ngay_xay_ra: str = Field(description="Ngày, tháng, năm xảy ra vụ ngộ độc thực phẩm (ví dụ: 15/05/2026, hôm qua...)")
     tinh_thanh: str = Field(description="Tên tỉnh hoặc thành phố nơi xảy ra vụ việc")
     xa_phuong_huyen: str = Field(description="Tên xã, phường, thị trấn hoặc quận, huyện")
@@ -26,107 +27,65 @@ class FoodPoisoningReport(BaseModel):
     so_nguoi_chet: int = Field(description="Số lượng người tử vong do ngộ độc thực phẩm. Nếu không nhắc tới ghi 0")
     mon_an_ngo_doc: str = Field(description="Tên các món ăn, thực phẩm nghi ngờ gây ra ngộ độc")
 
-# Khu vực 1: Tải file âm thanh (Tính năng mới)
-st.subheader("📁 Cách 1: Tải lên file ghi âm phản ánh")
-uploaded_audio = st.file_uploader("Chọn file âm thanh cuộc gọi (Hỗ trợ mp3, wav, m4a, ogg...)", type=["mp3", "wav", "m4a", "ogg"])
+# Thiết kế nút bấm thu âm to rõ cho giao diện điện thoại
+st.markdown("### 🔴 Nhấn để ghi âm lời nói:")
 
-# Biến lưu trữ nội dung gửi đi cho Gemini
-contents_to_send = None
+# Khởi chạy component ghi âm trực tiếp qua Microphone của thiết bị
+audio_record = mic_recorder(
+    start_prompt="🎤 Bắt đầu ghi âm cuộc gọi",
+    stop_prompt="🛑 Dừng nói & Gửi báo cáo",
+    key='recorder',
+    format="wav" # Định dạng âm thanh chuẩn dễ xử lý
+)
 
-if uploaded_audio is not None:
-    # Hiển thị trình phát nhạc để người dùng nghe lại tại chỗ
-    st.audio(uploaded_audio)
+# Nếu người dùng vừa thực hiện ghi âm xong
+if audio_record is not None:
+    # Lấy dữ liệu bytes âm thanh trực tiếp từ bộ nhớ đệm của thiết bị
+    audio_bytes = audio_record['bytes']
     
-    # Đọc dữ liệu binary của file âm thanh để gửi trực tiếp qua API
-    audio_bytes = uploaded_audio.read()
+    # Phát lại đoạn âm thanh vừa nói để người dùng kiểm tra (Tùy chọn)
+    st.audio(audio_bytes, format='audio/wav')
     
-    # Chuẩn bị dữ liệu gửi cho Gemini dạng InlineData
-    audio_part = types.Part.from_bytes(
-        data=audio_bytes,
-        mime_type=uploaded_audio.type,
-    )
-    
-    contents_to_send = [
-        audio_part,
-        "Hãy lắng nghe kỹ đoạn hội thoại/ghi âm này và trích xuất thông tin vụ ngộ độc thực phẩm theo cấu trúc yêu cầu."
-    ]
-    
-    if st.button("🚀 Bắt đầu nghe và phân tích file âm thanh"):
-        if not api_key:
-            st.error("⚠️ Vui lòng cấu hình GEMINI_API_KEY!")
-        else:
-            with st.spinner("🎧 Gemini đang lắng nghe và phân tích âm thanh... Vui lòng đợi trong giây lát..."):
-                try:
-                    client = genai.Client(api_key=api_key)
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=contents_to_send,
-                        config=types.GenerateContentConfig(
-                            system_instruction="Bạn là chuyên viên y tế cấp cao. Nhiệm vụ của bạn là nghe file âm thanh phản ánh sự cố ngộ độc thực phẩm, hiểu tiếng Việt cực tốt (bao gồm cả tiếng địa phương/nói lắp) và bóc tách dữ liệu chính xác.",
-                            response_mime_type="application/json",
-                            response_schema=FoodPoisoningReport,
-                        ),
-                    )
-                    
-                    # Xử lý kết quả trả về
-                    extracted_data = json.loads(response.text)
-                    st.success("🎉 Đã phân tích âm thanh thành công!")
-                    
-                    # Hiển thị kết quả ra bảng/giao diện đẹp mắt
-                    st.markdown("### 📊 Kết quả trích xuất từ file ghi âm:")
-                    st.write(f"- 🕒 **Thời gian:** {extracted_data.get('thoi_gian_nhan_tin')}")
-                    st.write(f"- 📅 **Ngày xảy ra:** {extracted_data.get('ngay_xay_ra')}")
-                    st.write(f"- 📍 **Địa điểm:** {extracted_data.get('xa_phuong_huyen')}, {extracted_data.get('tinh_thanh')}")
-                    st.write(f"- 🤢 **Số người mắc:** {extracted_data.get('so_nguoi_mac') if extracted_data.get('so_nguoi_mac') != -1 else 'Chưa rõ'} người")
-                    st.write(f"- 💀 **Số người tử vong:** {extracted_data.get('so_nguoi_chet')} người")
-                    st.write(f"- 🍲 **Món ăn nghi ngờ:** {extracted_data.get('mon_an_ngo_doc')}")
-                    
-                except Exception as e:
-                    st.error(f"Đã xảy ra lỗi khi xử lý âm thanh: {e}")
-
-st.write("---")
-
-# Khu vực 2: Khung Chat văn bản truyền thống
-st.subheader("💬 Cách 2: Trò chuyện/Nhập văn bản truyền thống")
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Nếu không có file âm thanh, bạn có thể gõ văn bản phản ánh vào đây nhé!"}]
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-if prompt := st.chat_input("Nhập nội dung phản ánh văn bản tại đây..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
     if not api_key:
-        st.error("⚠️ Thiếu API Key!")
+        st.error("⚠️ Hệ thống chưa được cấu hình API Key từ nhà phát triển.")
     else:
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            message_placeholder.markdown("🔄 Gemini đang phân tích văn bản...")
+        with st.spinner("🎧 Gemini đang lắng nghe giọng nói của bạn và xử lý dữ liệu..."):
             try:
+                # Định dạng file để truyền qua API Gemini
+                audio_part = types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type="audio/wav",
+                )
+                
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model='gemini-2.5-flash',
-                    contents=f"Đọc văn bản sau và trích xuất thông tin ngộ độc thực phẩm: {prompt}",
+                    contents=[
+                        audio_part,
+                        "Hãy nghe đoạn âm thanh tiếng Việt này và trích xuất dữ liệu vụ ngộ độc theo cấu trúc yêu cầu."
+                    ],
                     config=types.GenerateContentConfig(
-                        system_instruction="Bạn là trợ lý y tế chuyên bóc tách thông tin chính xác từ văn bản.",
+                        system_instruction="Bạn là tổng đài viên y tế thông minh. Nhiệm vụ của bạn là nghe giọng nói của người dân (có thể nói giọng vùng miền Bắc/Trung/Nam, nói nhanh hoặc hoảng loạn), hiểu chính xác ngữ cảnh và bóc tách thông tin vụ việc.",
                         response_mime_type="application/json",
                         response_schema=FoodPoisoningReport,
                     ),
                 )
-                extracted_data = json.loads(response.text)
-                response_text = f"**Ghi nhận thông tin văn bản:**\n\n"
-                response_text += f"- 🕒 **Thời gian:** {extracted_data.get('thoi_gian_nhan_tin')}\n"
-                response_text += f"- 📅 **Ngày xảy ra:** {extracted_data.get('ngay_xay_ra')}\n"
-                response_text += f"- 📍 **Địa điểm:** {extracted_data.get('xa_phuong_huyen')}, {extracted_data.get('tinh_thanh')}\n"
-                response_text += f"- 🤢 **Số người mắc:** {extracted_data.get('so_nguoi_mac') if extracted_data.get('so_nguoi_mac') != -1 else 'Chưa rõ'} người\n"
-                response_text += f"- 💀 **Số người tử vong:** {extracted_data.get('so_nguoi_chet')} người\n"
-                response_text += f"- 🍲 **Món ăn nghi ngờ:** {extracted_data.get('mon_an_ngo_doc')}\n"
                 
-                message_placeholder.markdown(response_text)
-                st.session_state.messages.append({"role": "assistant", "content": response_text})
+                # Phân rã dữ liệu JSON nhận được
+                extracted_data = json.loads(response.text)
+                
+                # Hiển thị kết quả trực quan ngay trên màn hình điện thoại
+                st.success("✅ Đã ghi nhận và xử lý xong báo cáo!")
+                
+                st.markdown("### 📊 Thông tin sự cố bóc tách được:")
+                st.info(f"""
+                * 🕒 **Thời gian:** {extracted_data.get('thoi_gian_nhan_tin')}
+                * 📅 **Ngày xảy ra:** {extracted_data.get('ngay_xay_ra')}
+                * 📍 **Địa bàn xảy ra:** {extracted_data.get('xa_phuong_huyen')}, {extracted_data.get('tinh_thanh')}
+                * 🤢 **Số ca mắc:** {extracted_data.get('so_nguoi_mac') if extracted_data.get('so_nguoi_mac') != -1 else 'Chưa rõ'} người
+                * 💀 **Số ca tử vong:** {extracted_data.get('so_nguoi_chet')} người
+                * 🍲 **Thực phẩm nghi ngờ:** {extracted_data.get('mon_an_ngo_doc')}
+                """)
+                
             except Exception as e:
-                st.error(f"Lỗi: {e}")
+                st.error(f"Có lỗi xảy ra trong quá trình nhận diện giọng nói: {e}")
